@@ -1,0 +1,10 @@
+faster-whisper>=1.2
+PyAudioWPatch>=0.2.12
+numpy>=2.0
+requests>=2.31
+# GPU (NVIDIA): cuBLAS + cuDNN 9 cho CTranslate2
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*
+# dev
+pytest
+pytest-cov

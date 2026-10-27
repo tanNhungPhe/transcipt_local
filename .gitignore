@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Private data: transcripts of your calls/videos
+transcripts/
+
+# Large models (re-download with setup_offline.bat); the ov_cache is machine-specific
+models/nllb-1.3B/
+models/whisper-ov/
+models/whisper-ct2/
+models/ov_cache/
+
+# Subtitles produced next to media files
+*.srt
