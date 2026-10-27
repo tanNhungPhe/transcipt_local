@@ -1,0 +1,3 @@
+# Only for machines with an NVIDIA GPU: cuBLAS + cuDNN 9 for CTranslate2
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*

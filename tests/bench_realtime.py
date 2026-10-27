@@ -1,6 +1,6 @@
 """Simulate a live stream from a WAV file and measure end-to-end latency.
 
-    python tests/bench_realtime.py speech.wav [model]
+    python tests/bench_realtime.py speech.wav [model] [auto|npu|igpu|cuda|cpu]
 """
 import sys
 import time
@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from livetrans.audio_capture import CHUNK_SAMPLES  # noqa: E402
 from livetrans.audio_utils import resample, to_mono  # noqa: E402
 from livetrans.engine import select_events  # noqa: E402
+from livetrans.model_store import enable_offline_mode  # noqa: E402
 from livetrans.segmenter import StreamingSegmenter  # noqa: E402
 from livetrans.transcriber import get_transcriber  # noqa: E402
 from livetrans.translator import Translator  # noqa: E402
@@ -29,8 +30,10 @@ def load_wav(path: str) -> np.ndarray:
 def main() -> None:
     audio = load_wav(sys.argv[1])
     model = sys.argv[2] if len(sys.argv) > 2 else "large-v3-turbo"
+    device = sys.argv[3] if len(sys.argv) > 3 else "auto"
+    enable_offline_mode()
     t0 = time.perf_counter()
-    tr = get_transcriber(model)
+    tr = get_transcriber(model, device)
     print(f"model {model} on {tr.device} loaded in {time.perf_counter() - t0:.1f}s")
     translator = Translator("vi")
     seg = StreamingSegmenter(SileroScorer())
@@ -48,7 +51,7 @@ def main() -> None:
             line = f"[{ev.kind:7}] {ev.end_sec:5.1f}s asr={asr:4.0f}ms  {res.text}"
             if ev.kind == "final" and res.text:
                 t = time.perf_counter()
-                vi = translator.translate(res.text)
+                vi = translator.translate(res.text, res.language)
                 line += f"\n{'':10}→ ({(time.perf_counter() - t) * 1000:.0f}ms) {vi}"
             print(line)
     print(f"ASR latency: median {np.median(asr_times):.0f} ms, max {max(asr_times):.0f} ms, calls {len(asr_times)}")

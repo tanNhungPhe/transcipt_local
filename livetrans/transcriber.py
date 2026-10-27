@@ -1,17 +1,18 @@
-"""faster-whisper wrapper tuned for low-latency streaming."""
+"""Speech-to-text front door: shared result types and device-aware model loading."""
 import logging
 import threading
 from dataclasses import dataclass
+from typing import Callable, Protocol
 
 import numpy as np
 
-from .cuda_setup import register_cuda_dlls
+from .devices import CTRANSLATE2, DevicePlan, cuda_available, openvino_devices, plan_candidates
+from .model_store import ModelMissingError, ct2_whisper_dir, has_ct2_model, has_ov_whisper, missing, ov_whisper_dir
 from .text_filters import collapse_repeats, is_hallucination, normalize_text
 
 log = logging.getLogger(__name__)
 
-_NO_SPEECH_DROP = 0.6
-_LOGPROB_DROP = -1.0
+Progress = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -21,74 +22,72 @@ class TranscriptResult:
     language_probability: float = 1.0
 
 
-def _pick_device(device: str) -> tuple[str, str]:
-    if device != "auto":
-        return device, ("float16" if device == "cuda" else "int8")
-    register_cuda_dlls()
-    try:
-        import ctranslate2
-
-        if ctranslate2.get_cuda_device_count() > 0:
-            return "cuda", "float16"
-    except Exception as exc:  # noqa: BLE001 - any CUDA probe failure means CPU
-        log.warning("CUDA probe failed, using CPU: %s", exc)
-    return "cpu", "int8"
+@dataclass(frozen=True)
+class SpeechSegment:
+    start: float
+    end: float
+    text: str
 
 
-_cache: dict[tuple[str, str], "Transcriber"] = {}
+class Transcriber(Protocol):
+    device: str
+    language: str | None
+
+    def transcribe(self, audio: np.ndarray, final: bool, prompt: str | None = None,
+                   language_hint: str | None = None) -> TranscriptResult: ...
+
+    def transcribe_long(self, audio: np.ndarray, language: str | None,
+                        progress: Progress) -> tuple[list[SpeechSegment], str]: ...
+
+
+def clean_text(raw: str) -> str:
+    text = collapse_repeats(normalize_text(raw))
+    return "" if is_hallucination(text) else text
+
+
+def _load(plan: DevicePlan, model_size: str) -> Transcriber:
+    if plan.backend == CTRANSLATE2:
+        from .ct2_backend import FasterWhisperTranscriber
+
+        local = ct2_whisper_dir(model_size)
+        # without a local copy, faster-whisper resolves the name from the HuggingFace cache (offline mode)
+        source = str(local) if has_ct2_model(local) else model_size
+        return FasterWhisperTranscriber(source, plan.device, plan.label)
+    from .ov_backend import OpenVinoTranscriber
+
+    path = ov_whisper_dir(model_size)
+    if not has_ov_whisper(path):
+        raise missing(f"Whisper {model_size} (OpenVINO)", path)
+    return OpenVinoTranscriber(path, plan.device, plan.label)
+
+
+def load_first_working(model_size: str, plans: list[DevicePlan],
+                       loader: Callable[[DevicePlan, str], Transcriber] = _load) -> Transcriber:
+    # keep only messages: a stored exception's traceback would pin a half-loaded model in memory
+    errors: list[str] = []
+    model_missing = False
+    for plan in plans:
+        try:
+            log.info("Loading Whisper '%s' on %s (%s)", model_size, plan.label, plan.backend)
+            return loader(plan, model_size)
+        except Exception as exc:  # noqa: BLE001 - try the next device, report all failures at the end
+            log.warning("Whisper on %s failed: %s", plan.label, exc)
+            errors.append(f"{plan.label}: {exc}")
+            model_missing |= isinstance(exc, ModelMissingError)
+    message = "Không tải được Whisper trên thiết bị nào — " + " | ".join(errors)
+    raise ModelMissingError(message) if model_missing else RuntimeError(message)
+
+
+_cache: dict[tuple[str, str], Transcriber] = {}
 _cache_lock = threading.Lock()
 
 
-def get_transcriber(model_size: str, device: str = "auto") -> "Transcriber":
-    """Load each model once and share it between live and file modes (VRAM is tight)."""
+def get_transcriber(model_size: str, device: str = "auto") -> Transcriber:
+    """Load each model once and share it between live and file modes (memory is tight)."""
     with _cache_lock:
         key = (model_size, device)
         if key not in _cache:
             _cache.clear()  # free the previous model before loading another
-            _cache[key] = Transcriber(model_size, device)
+            plans = plan_candidates(device, device in ("auto", "cuda") and cuda_available(), openvino_devices())
+            _cache[key] = load_first_working(model_size, plans)
         return _cache[key]
-
-
-class Transcriber:
-    def __init__(self, model_size: str, device: str = "auto", language: str | None = None):
-        from faster_whisper import WhisperModel
-
-        register_cuda_dlls()
-        self.device, compute_type = _pick_device(device)
-        self.language = language or None
-        self.lock = threading.Lock()  # one GPU inference at a time
-        log.info("Loading Whisper '%s' on %s (%s)", model_size, self.device, compute_type)
-        self.model = WhisperModel(model_size, device=self.device, compute_type=compute_type)
-        self._warm_up()
-
-    def _warm_up(self) -> None:
-        self.transcribe(np.zeros(16000, dtype=np.float32), final=False)
-
-    def transcribe(
-        self,
-        audio: np.ndarray,
-        final: bool,
-        prompt: str | None = None,
-        language_hint: str | None = None,
-    ) -> TranscriptResult:
-        """`language_hint` is used only when no fixed source language was configured."""
-        with self.lock:
-            segments, info = self.model.transcribe(
-                audio,
-                language=self.language or language_hint,
-                beam_size=5 if final else 1,
-                best_of=1,
-                temperature=0.0,
-                condition_on_previous_text=False,
-                initial_prompt=prompt or None,
-                vad_filter=False,
-                without_timestamps=True,
-            )
-            kept = [
-                s.text for s in segments
-                if not (s.no_speech_prob > _NO_SPEECH_DROP and s.avg_logprob < _LOGPROB_DROP)
-            ]
-        text = collapse_repeats(normalize_text(" ".join(kept)))
-        if is_hallucination(text):
-            text = ""
-        return TranscriptResult(text=text, language=info.language, language_probability=info.language_probability)

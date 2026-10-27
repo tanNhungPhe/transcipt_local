@@ -10,7 +10,7 @@ from livetrans.segmenter import SegmentEvent, SegmenterConfig, StreamingSegmente
 from livetrans.srt import Cue, build_srt, format_timestamp
 from livetrans.text_filters import collapse_repeats, is_hallucination
 from livetrans.transcript_store import TranscriptStore
-from livetrans.translator import TranslationJob, TranslationWorker, Translator, parse_gtx_response
+from livetrans.translator import TranslationJob, TranslationWorker, Translator
 
 CHUNK = 1600  # 0.1 s at 16 kHz
 
@@ -122,25 +122,18 @@ def test_collapse_repeats():
 # ---------- translator ----------
 def test_translator_caches():
     calls = []
-    t = Translator("vi", backend=lambda text, tgt: calls.append(text) or f"{tgt}:{text}")
+    t = Translator("vi", backend=lambda text, tgt, src: calls.append(text) or f"{tgt}:{text}")
     assert t.translate("hello") == "vi:hello"
     assert t.translate(" hello ") == "vi:hello"
     assert t.translate("") == ""
     assert calls == ["hello"]
 
 
-def test_parse_gtx_response():
-    data = [[["Xin chào. ", "Hello. ", None], ["Tạm biệt", "Bye", None]], None, "en"]
-    assert parse_gtx_response(data) == "Xin chào. Tạm biệt"
-    with pytest.raises(ValueError):
-        parse_gtx_response({"error": 1})
-
-
 def test_worker_coalesces_partials_and_keeps_finals():
     gate = threading.Event()
     results = []
 
-    def slow(text, tgt):
+    def slow(text, tgt, src):
         gate.wait(2)
         return text.upper()
 

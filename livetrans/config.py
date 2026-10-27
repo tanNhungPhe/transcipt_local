@@ -1,11 +1,11 @@
 """User-facing settings and language tables."""
 from dataclasses import dataclass, replace
 
-# Display name -> Google Translate code
+# Display name -> ISO 639-1 code (mapped to NLLB-200 tags in nllb.py)
 TARGET_LANGUAGES: dict[str, str] = {
     "Tiếng Việt": "vi",
     "English": "en",
-    "中文 (简体)": "zh-CN",
+    "中文 (简体)": "zh",
     "日本語": "ja",
     "한국어": "ko",
     "Français": "fr",
@@ -36,7 +36,7 @@ MODELS = ("large-v3-turbo", "medium", "small", "base", "tiny")
 class Settings:
     source: str = "system"              # "system" | "mic"
     model: str = "large-v3-turbo"
-    device: str = "auto"                # "auto" | "cuda" | "cpu"
+    device: str = "auto"                # see devices.DEVICES
     source_language: str | None = None
     target_language: str = "vi"
     translate: bool = True

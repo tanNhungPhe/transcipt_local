@@ -85,12 +85,12 @@ class LiveEngine:
         self._detected_lang = None
         self._last_final_text = ""
         if s.translate:
+            self._emit(UiEvent("status", text="Đang tải model dịch offline…"))
             self._worker = TranslationWorker(Translator(s.target_language), self._on_translation, self._on_tr_error)
             self._worker.start()
         self._capture = AudioCapture(s.source)
         self._capture.start()
-        device = self._transcriber.device.upper()
-        self._emit(UiEvent("status", text=f"Đang nghe: {self._capture.device_name} · {device}"))
+        self._emit(UiEvent("status", text=f"Đang nghe: {self._capture.device_name} · {self._transcriber.device}"))
 
     def _teardown(self) -> None:
         if self._capture is not None:
@@ -122,12 +122,18 @@ class LiveEngine:
     def _handle(self, ev: SegmentEvent) -> None:
         final = ev.kind == "final"
         t0 = time.perf_counter()
-        result = self._transcriber.transcribe(
-            ev.audio,
-            final=final,
-            prompt=self._last_final_text[-_PROMPT_CHARS:] if final else None,
-            language_hint=None if final else self._detected_lang,
-        )
+        try:
+            result = self._transcriber.transcribe(
+                ev.audio,
+                final=final,
+                prompt=self._last_final_text[-_PROMPT_CHARS:] if final else None,
+                language_hint=None if final else self._detected_lang,
+            )
+        except RuntimeError as exc:  # one bad segment must not end the whole session
+            log.warning("Transcription failed for utterance %d: %s", ev.utterance_id, exc)
+            if final:
+                self._emit(UiEvent("error", text=f"Lỗi nhận dạng: {exc}"))
+            return
         latency = int((time.perf_counter() - t0) * 1000)
         self._emit(UiEvent(ev.kind, ev.utterance_id, result.text, final, ev.start_sec, latency))
         if result.text and result.language_probability >= _LANG_CONFIDENT:
@@ -135,9 +141,9 @@ class LiveEngine:
             self._detected_lang = result.language
         if final and result.text:
             self._last_final_text = result.text
-        self._maybe_translate(ev.utterance_id, result.text, final)
+        self._maybe_translate(ev.utterance_id, result.text, final, result.language)
 
-    def _maybe_translate(self, utterance_id: int, text: str, final: bool) -> None:
+    def _maybe_translate(self, utterance_id: int, text: str, final: bool, language: str | None) -> None:
         if self._worker is None or not text:
             return
         if not final:
@@ -145,7 +151,7 @@ class LiveEngine:
             if not self._settings.translate_partials or now - self._last_partial_tr < _PARTIAL_TRANSLATE_INTERVAL:
                 return
             self._last_partial_tr = now
-        self._worker.submit(TranslationJob(utterance_id, text, final))
+        self._worker.submit(TranslationJob(utterance_id, text, final, self._settings.source_language or language))
 
     def _on_translation(self, job: TranslationJob, translated: str) -> None:
         self._emit(UiEvent("translation", job.utterance_id, translated, job.final))

@@ -7,6 +7,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .config import MODELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, Settings
+from .devices import DEVICE_LABELS
 from .engine import LiveEngine, UiEvent
 from .transcript_store import TranscriptStore
 
@@ -42,7 +43,7 @@ class OverlayApp:
         r = self.root
         r.title("Live Translate")
         r.configure(bg=BG)
-        w, h = 960, 300
+        w, h = 1080, 300
         x = (r.winfo_screenwidth() - w) // 2
         y = r.winfo_screenheight() - h - 80
         r.geometry(f"{w}x{h}+{x}+{y}")
@@ -86,6 +87,7 @@ class OverlayApp:
         ttk.Label(bar, text="Dịch →").pack(side="left", padx=(6, 0))
         self.tgt_var = self._combo(bar, TARGET_LANGUAGES, _key_for(TARGET_LANGUAGES, s.target_language), 12)
         self.model_var = self._combo(bar, MODELS, s.model, 14)
+        self.device_var = self._combo(bar, DEVICE_LABELS, _key_for(DEVICE_LABELS, s.device), 15)
         self.translate_var = tk.BooleanVar(value=s.translate)
         ttk.Checkbutton(bar, text="Dịch", variable=self.translate_var).pack(side="left", padx=4)
 
@@ -140,6 +142,7 @@ class OverlayApp:
             source_language=SOURCE_LANGUAGES[self.src_lang_var.get()],
             target_language=TARGET_LANGUAGES[self.tgt_var.get()],
             model=self.model_var.get(),
+            device=DEVICE_LABELS[self.device_var.get()],
             translate=self.translate_var.get(),
         )
 
